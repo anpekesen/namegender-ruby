@@ -1,11 +1,11 @@
-# GenderScope Ruby
+# NameGender Ruby
 
 ```sh
-gem install genderscope
+gem install namegender
 ```
 
 ```ruby
-client = GenderScope::Client.new("YOUR_API_KEY")
+client = NameGender::Client.new("YOUR_API_KEY")
 result = client.name("Ayşe", country: "TR")
 puts result["gender"]
 ```

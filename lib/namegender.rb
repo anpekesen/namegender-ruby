@@ -2,7 +2,7 @@ require "json"
 require "net/http"
 require "uri"
 
-module GenderScope
+module NameGender
   class Error < StandardError
     attr_reader :status, :body
     def initialize(message, status = 0, body = nil)
@@ -11,7 +11,7 @@ module GenderScope
   end
 
   class Client
-    def initialize(api_key, base_url: "https://genderscope.io/api/v1")
+    def initialize(api_key, base_url: "https://namegender.com/api/v1")
       raise ArgumentError, "api_key is required" if api_key.to_s.empty?
       @api_key, @base_url = api_key, base_url.sub(%r{/$}, "")
     end
@@ -47,7 +47,7 @@ module GenderScope
       raise Error.new(parsed["message"] || "HTTP #{response.code}", response.code.to_i, parsed) unless response.is_a?(Net::HTTPSuccess)
       parsed
     rescue JSON::ParserError
-      raise Error.new("GenderScope returned invalid JSON", response&.code.to_i)
+      raise Error.new("NameGender returned invalid JSON", response&.code.to_i)
     end
   end
 end
