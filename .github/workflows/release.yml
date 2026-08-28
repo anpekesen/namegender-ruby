@@ -1,0 +1,39 @@
+# RubyGems yayını.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+
+      - run: ruby -Ilib -e 'require "namegender"'
+
+      - name: Sürüm etiketle eşleşiyor mu
+        run: |
+          ver=$(ruby -e 'puts Gem::Specification.load("namegender.gemspec").version')
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$ver" != "$tag" ]; then
+            echo "gemspec ($ver) ile etiket ($tag) uyuşmuyor" >&2
+            exit 1
+          fi
+
+      - name: Yayınla
+        run: |
+          mkdir -p ~/.gem
+          printf -- "---\n:rubygems_api_key: %s\n" "$RUBYGEMS_API_KEY" > ~/.gem/credentials
+          chmod 600 ~/.gem/credentials
+          gem build namegender.gemspec
+          gem push namegender-*.gem
+        env:
+          RUBYGEMS_API_KEY: ${{ secrets.RUBYGEMS_API_KEY }}
