@@ -28,6 +28,14 @@ module NameGender
     def bulk(values, country: nil, type: "name", **options)
       post("/gender/bulk", { names: values, country: country, type: type }.merge(options).compact)
     end
+    # Country distribution of a name. Not a country-of-origin or ethnicity
+    # inference: "registrations" is counted volume, comparable only among the
+    # countries that publish counted birth statistics; "attested_in" is
+    # presence with no weight attached. `limit` caps "registrations" (1-100,
+    # server default 25).
+    def countries(value, limit: nil)
+      post("/gender/countries", { name: value, limit: limit }.compact)
+    end
     def account
       request(Net::HTTP::Get, "/me")
     end
