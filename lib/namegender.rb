@@ -16,6 +16,10 @@ module NameGender
       @api_key, @base_url = api_key, base_url.sub(%r{/$}, "")
     end
 
+    # `options` are sent as-is: `ai_fallback: true` falls back to a language
+    # model for names not in the database (needs AI consent on the account),
+    # `best_guess: true` returns the most likely gender even below the
+    # probability threshold. Any non-2xx response raises NameGender::Error.
     def name(value, country: nil, **options)
       post("/gender", { name: value, country: country }.merge(options).compact)
     end
