@@ -1,6 +1,6 @@
 Gem::Specification.new do |spec|
   spec.name = "namegender"
-  spec.version = "0.3.0"
+  spec.version = "0.3.1"
   spec.summary = "Official Ruby client for the NameGender API"
   spec.description = "A dependency-free Ruby client for name, email, username, bulk and country distribution lookups through NameGender."
   spec.homepage = "https://namegender.com"

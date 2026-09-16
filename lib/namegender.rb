@@ -30,7 +30,7 @@ module NameGender
       post("/gender/username", { username: value, country: country }.merge(options).compact)
     end
     def bulk(values, country: nil, type: "name", **options)
-      post("/gender/bulk", { names: values, country: country, type: type }.merge(options).compact)
+      post("/gender/bulk", { names: Array(values), country: country, type: type }.merge(options).compact)
     end
     # Country distribution of a name. Not a country-of-origin or ethnicity
     # inference: "registrations" is counted volume, comparable only among the

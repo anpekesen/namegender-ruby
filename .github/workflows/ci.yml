@@ -1,0 +1,28 @@
+# RubyGems yayını release.yml'de. Bu iş akışı istemcinin, API'nin yerine
+# geçen yerel bir sunucuya karşı doğru istekleri attığını ve yanıtları doğru
+# okuduğunu kanıtlar; en düşük desteklenen (gemspec: >= 3.0) ve güncel Ruby'de.
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        ruby: ['3.0', '3.3']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+      # minitest ve rake Ruby ile gelen "bundled gem"ler; Gemfile yok.
+      - run: rake test
