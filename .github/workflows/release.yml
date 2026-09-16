@@ -41,6 +41,8 @@ jobs:
           printf -- "---\n:rubygems_api_key: %s\n" "$RUBYGEMS_API_KEY" > ~/.gem/credentials
           chmod 600 ~/.gem/credentials
           gem build namegender.gemspec
-          gem push namegender-*.gem
+          # stdin kapalı: MFA "UI and API" seviyesindeyse gem push tek kullanımlık
+          # kod sorar. CI'da kodu girecek kimse yok; beklemek yerine hemen düşsün.
+          gem push namegender-*.gem < /dev/null
         env:
           RUBYGEMS_API_KEY: ${{ secrets.RUBYGEMS_API_KEY }}
