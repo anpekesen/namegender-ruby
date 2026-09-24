@@ -1,10 +1,13 @@
 require "minitest/autorun"
 require "json"
 require "socket"
+require "stringio"
+require "tmpdir"
 require "namegender"
 
 # A stand-in for the NameGender API: a plain TCPServer on 127.0.0.1 that
 # records every request and answers with canned JSON in the current API shape.
+# Bodies that are not JSON (a multipart upload) are kept as raw bytes.
 class StandInAPI
   Request = Struct.new(:method, :path, :headers, :raw_body, :body)
 
@@ -15,6 +18,7 @@ class StandInAPI
     @port = @server.addr[1]
     @requests = []
     @overrides = {}
+    @scripts = {}
     @lock = Mutex.new
     @thread = Thread.new do
       loop do
@@ -42,6 +46,12 @@ class StandInAPI
     @lock.synchronize { @overrides[path] = [status, raw] }
   end
 
+  # Answer one path with these [status, raw, content type] responses in turn;
+  # the last one repeats.
+  def script(path, *responses)
+    @lock.synchronize { @scripts[path] = responses }
+  end
+
   def stop
     @thread.kill
     @server.close
@@ -58,26 +68,42 @@ class StandInAPI
       headers[key.downcase] = value.strip
     end
     length = headers["content-length"].to_i
-    raw = length.positive? ? socket.read(length).force_encoding(Encoding::UTF_8) : nil
-    body = raw && JSON.parse(raw)
+    json = headers["content-type"].to_s.start_with?("application/json")
+    raw = length.positive? ? socket.read(length).force_encoding(json ? Encoding::UTF_8 : Encoding::BINARY) : nil
+    body = raw && json ? JSON.parse(raw) : nil
     @lock.synchronize { @requests << Request.new(method, path, headers, raw, body) }
 
-    status, payload = begin
-      @lock.synchronize { @overrides[path] } || respond(path, body)
+    status, payload, type = begin
+      @lock.synchronize { next_scripted(path) || @overrides[path] } || respond(method, path, body)
     rescue StandardError => e
       [500, { "error" => "stand_in_failed", "message" => "#{e.class}: #{e.message}" }]
     end
     payload = JSON.generate(payload) unless payload.is_a?(String)
-    reason = { 200 => "OK", 402 => "Payment Required" }.fetch(status, "Status")
+    reason = { 200 => "OK", 201 => "Created", 204 => "No Content", 402 => "Payment Required",
+               503 => "Service Unavailable" }.fetch(status, "Status")
     socket.write(
       "HTTP/1.1 #{status} #{reason}\r\n" \
-      "Content-Type: application/json; charset=utf-8\r\n" \
+      "Content-Type: #{type || "application/json; charset=utf-8"}\r\n" \
       "Content-Length: #{payload.bytesize}\r\n" \
       "Connection: close\r\n\r\n"
     )
     socket.write(payload)
   ensure
     socket&.close
+  end
+
+  def next_scripted(path)
+    responses = @scripts[path] or return
+    responses.size > 1 ? responses.shift : responses.first
+  end
+
+  def job(status, extra = {})
+    {
+      "id" => "B-1", "status" => status, "source" => "api",
+      "file" => { "name" => "a.csv", "format" => "csv" },
+      "progress" => { "processed_rows" => 0, "total_rows" => 1, "percent" => 0 },
+      "poll_after_seconds" => 5
+    }.merge(extra)
   end
 
   def result(query, name)
@@ -90,7 +116,26 @@ class StandInAPI
     }
   end
 
-  def respond(path, body)
+  def respond(method, path, body)
+    case [method, path]
+    in ["POST", "/api/v1/batches"]
+      [201, job("queued")]
+    in ["POST", "/api/v1/batches/B-1/start"]
+      [200, job("queued", "columns" => body)]
+    in ["GET", "/api/v1/batches/B-1"]
+      [200, job("completed")]
+    in ["DELETE", "/api/v1/batches/B-1"]
+      [204, ""]
+    in ["GET", "/api/v1/batches/B-1/result"]
+      [200, "\xEF\xBB\xBFid,gender\n1,female\n".b, "text/csv; charset=utf-8"]
+    in ["GET", %r{\A/api/v1/batches(\?|\z)}]
+      [200, { "data" => [job("completed")], "page" => 1, "per_page" => 5, "total" => 1, "has_more" => false }]
+    else
+      respond_json(path, body)
+    end
+  end
+
+  def respond_json(path, body)
     case path
     when "/api/v1/gender"
       [200, result(body["name"], body["name"])]
@@ -303,5 +348,187 @@ class ClientTest < Minitest::Test
     assert_equal 502, error.status
     assert_equal "NameGender returned invalid JSON", error.message
     assert_nil error.body
+  end
+
+  # --- File jobs ---
+
+  # Records the backoff instead of sleeping through it.
+  def record_pauses(batches)
+    pauses = []
+    batches.define_singleton_method(:pause) { |seconds| pauses << seconds }
+    pauses
+  end
+
+  def test_batch_create_sends_a_multipart_upload
+    job = @client.batches.create("ad\nAyşe\n".b, filename: "a.csv", name_column: "ad",
+                                 country: "TR", best_guess: true, ai_fallback: nil)
+    req = last_request
+    assert_equal "POST", req.method
+    assert_equal "/api/v1/batches", req.path
+    assert_equal "Bearer #{KEY}", req.headers["authorization"]
+    assert_match %r{\Amultipart/form-data; boundary=\S+\z}, req.headers["content-type"]
+    assert_match(/\A\h{8}-\h{4}-\h{4}-\h{4}-\h{12}\z/, req.headers["idempotency-key"])
+    body = req.raw_body
+    assert_equal Encoding::BINARY, body.encoding
+    assert_includes body, %(name="file"; filename="a.csv")
+    assert_includes body, "ad\nAyşe\n".b
+    { "name_column" => "ad", "country" => "TR", "best_guess" => "true", "start" => "true" }.each do |key, value|
+      assert_includes body, %(name="#{key}"\r\n\r\n#{value}\r\n)
+    end
+    refute_includes body, "ai_fallback"
+    assert_equal "B-1", job["id"]
+  end
+
+  def test_batch_create_reads_a_path_and_an_io
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "customers.xlsx")
+      File.binwrite(path, "PK\x03\x04".b)
+      @client.batches.create(path, start: false)
+      File.open(path, "rb") { |io| @client.batches.create(io, name_column: "ad") }
+    end
+    first, second = @api.requests.map(&:raw_body)
+    assert_includes first, %(filename="customers.xlsx")
+    assert_includes first, %(name="start"\r\n\r\nfalse\r\n)
+    assert_includes first, "PK\x03\x04".b
+    assert_includes second, %(filename="customers.xlsx")
+    assert_includes second, %(name="start"\r\n\r\ntrue\r\n)
+  end
+
+  def test_batch_create_needs_a_filename_for_bytes
+    assert_raises(ArgumentError) { @client.batches.create("ad\nAyşe\n".b, name_column: "ad") }
+    assert_raises(ArgumentError) { @client.batches.create(StringIO.new("ad\n"), name_column: "ad") }
+    assert_empty @api.requests
+  end
+
+  def test_batch_create_retries_a_503_with_the_same_key
+    pauses = record_pauses(@client.batches)
+    @api.script("/api/v1/batches", [503, '{"error":"unavailable"}'], [201, '{"id":"B-1","status":"queued"}'])
+    job = @client.batches.create("ad\n".b, filename: "a.csv", name_column: "ad")
+    assert_equal "B-1", job["id"]
+    keys = @api.requests.map { |r| r.headers["idempotency-key"] }
+    assert_equal 2, keys.size
+    assert_equal 1, keys.uniq.size
+    assert_equal [1], pauses
+  end
+
+  def test_batch_create_keeps_a_given_key_and_gives_up_after_the_retries
+    pauses = record_pauses(@client.batches)
+    @api.script("/api/v1/batches", [502, "<html>Bad Gateway</html>"])
+    error = assert_raises(NameGender::Error) do
+      @client.batches.create("ad\n".b, filename: "a.csv", name_column: "ad", idempotency_key: "mine", retries: 2)
+    end
+    assert_equal 502, error.status
+    assert_equal %w[mine mine mine], @api.requests.map { |r| r.headers["idempotency-key"] }
+    assert_equal [1, 2], pauses
+  end
+
+  def test_batch_create_does_not_retry_a_402
+    pauses = record_pauses(@client.batches)
+    @api.script("/api/v1/batches", [402, '{"error":"no_credits","message":"Out of credits."}'])
+    error = assert_raises(NameGender::Error) { @client.batches.create("ad\n".b, filename: "a.csv", name_column: "ad") }
+    assert_equal 402, error.status
+    assert_equal "no_credits", error.body["error"]
+    assert_equal 1, @api.requests.size
+    assert_empty pauses
+  end
+
+  def test_batch_create_retries_network_errors
+    port = @api.port
+    @api.stop
+    client = NameGender::Client.new(KEY, base_url: "http://127.0.0.1:#{port}/api/v1")
+    pauses = record_pauses(client.batches)
+    assert_raises(SystemCallError) { client.batches.create("ad\n".b, filename: "a.csv", retries: 1) }
+    assert_equal [1], pauses
+    @api = StandInAPI.new
+  end
+
+  def test_batch_start
+    job = @client.batches.start("B-1", name_column: "first_name", country_column: "country", country: nil)
+    assert_request "POST", "/api/v1/batches/B-1/start", { "name_column" => "first_name", "country_column" => "country" }
+    assert_equal "queued", job["status"]
+  end
+
+  def test_batch_wait_polls_until_finished
+    pauses = record_pauses(@client.batches)
+    @api.script("/api/v1/batches/B-1",
+                [200, '{"id":"B-1","status":"queued","poll_after_seconds":2}'],
+                [200, '{"id":"B-1","status":"processing"}'],
+                [200, '{"id":"B-1","status":"failed","error":{"code":"unreadable_file"}}'])
+    seen = []
+    job = @client.batches.wait("B-1", on_progress: ->(j) { seen << j["status"] })
+    assert_equal "failed", job["status"]
+    assert_equal "unreadable_file", job["error"]["code"]
+    assert_equal %w[queued processing failed], seen
+    assert_equal [2, 5], pauses
+    assert_equal ["GET"], @api.requests.map(&:method).uniq
+  end
+
+  def test_batch_wait_returns_an_uploaded_job_and_times_out
+    @api.script("/api/v1/batches/B-1", [200, '{"id":"B-1","status":"uploaded"}'])
+    assert_equal "uploaded", @client.batches.wait("B-1")["status"]
+
+    @api.script("/api/v1/batches/B-1", [200, '{"id":"B-1","status":"processing","poll_after_seconds":30}'])
+    error = assert_raises(NameGender::Error) { @client.batches.wait("B-1", timeout: 10) }
+    assert_equal "Timed out waiting for B-1", error.message
+    assert_equal "processing", error.body["status"]
+  end
+
+  def test_batch_get_cancel_list_and_download
+    assert_equal "completed", @client.batches.get("B-1")["status"]
+    assert_nil @client.batches.cancel("B-1")
+    assert_equal 1, @client.batches.list(limit: 5)["total"]
+    @client.batches.list
+    csv = @client.batches.download("B-1")
+    assert_equal "\xEF\xBB\xBFid,gender\n1,female\n".b, csv
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "out.csv")
+      assert_equal path, @client.batches.download("B-1", path)
+      assert_equal csv, File.binread(path)
+    end
+    assert_equal [
+      "GET /api/v1/batches/B-1", "DELETE /api/v1/batches/B-1", "GET /api/v1/batches?limit=5",
+      "GET /api/v1/batches", "GET /api/v1/batches/B-1/result", "GET /api/v1/batches/B-1/result"
+    ], @api.requests.map { |r| "#{r.method} #{r.path}" }
+  end
+
+  def test_batch_ids_are_escaped
+    @api.script("/api/v1/batches/a%2Fb%20c", [200, '{"id":"a/b c","status":"queued"}'])
+    assert_equal "a/b c", @client.batches.get("a/b c")["id"]
+  end
+
+  # --- Webhooks ---
+
+  # Same vector as the server's WebhookDeliveryTest and the JS and Python SDKs.
+  SECRET = "whsec_test_vector"
+  PAYLOAD = '{"id":"evt_1","type":"webhook.test"}'
+  SIGNATURE = "857fcddfea47617c448b7a8e6537bbd59c9922a37c5273b2709812fbadb29e50"
+  HEADER = "t=1700000000,v1=#{SIGNATURE}"
+  NOW = 1_700_000_000
+
+  def test_webhook_verifies_the_shared_vector
+    event = NameGender::Webhooks.verify(PAYLOAD, HEADER, SECRET, now: NOW)
+    assert_equal({ "id" => "evt_1", "type" => "webhook.test" }, event)
+    NameGender::Webhooks.verify(PAYLOAD.b, HEADER, SECRET, now: NOW + 60)
+    NameGender::Webhooks.verify(PAYLOAD, "t=1700000000,v1=#{"0" * 64},v1=#{SIGNATURE}", SECRET, now: NOW)
+  end
+
+  def test_webhook_rejects_anything_else
+    reject = lambda do |payload, header, secret, now|
+      assert_raises(NameGender::WebhookVerificationError) { NameGender::Webhooks.verify(payload, header, secret, now: now) }
+    end
+    reject.call(PAYLOAD.sub("evt_1", "evt_2"), HEADER, SECRET, NOW)
+    reject.call(PAYLOAD, HEADER, "whsec_other", NOW)
+    reject.call(PAYLOAD, HEADER, SECRET, NOW + 301)
+    reject.call(PAYLOAD, HEADER, SECRET, NOW - 301)
+    reject.call(PAYLOAD, nil, SECRET, NOW)
+    reject.call(PAYLOAD, "", SECRET, NOW)
+    reject.call(PAYLOAD, "t=abc,v1=", SECRET, NOW)
+    reject.call(PAYLOAD, "v1=#{SIGNATURE}", SECRET, NOW)
+    assert NameGender::WebhookVerificationError < NameGender::Error
+  end
+
+  def test_webhook_needs_a_raw_string_body_and_a_secret
+    assert_raises(TypeError) { NameGender::Webhooks.verify({ "id" => "evt_1" }, HEADER, SECRET, now: NOW) }
+    assert_raises(ArgumentError) { NameGender::Webhooks.verify(PAYLOAD, HEADER, "", now: NOW) }
   end
 end
