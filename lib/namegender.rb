@@ -21,21 +21,28 @@ module NameGender
       @api_key, @base_url = api_key, base_url.sub(%r{/$}, "")
     end
 
-    # `options` are sent as-is: `ai_fallback: true` falls back to a language
-    # model for names not in the database (needs AI consent on the account),
-    # `best_guess: true` returns the most likely gender even below the
-    # probability threshold. Any non-2xx response raises NameGender::Error.
-    def name(value, country: nil, **options)
-      post("/gender", { name: value, country: country }.merge(options).compact)
+    # `country` is an ISO 3166-1 alpha-2 code. Without it, `locale` (a
+    # language tag such as "it-IT" or "pt_BR"; a tag without a region, "en",
+    # sets no country) and then `ip` (the end user's IP address, not stored by
+    # the API) supply one: country > locale > ip. The result's
+    # "country_source" says which was used ("country", "locale", "ip" or nil).
+    #
+    # Other `options` are sent as-is: `ai_fallback: true` falls back to a
+    # language model for names not in the database (needs AI consent on the
+    # account), `best_guess: true` returns the most likely gender even below
+    # the probability threshold. Any non-2xx response raises NameGender::Error.
+    def name(value, country: nil, locale: nil, ip: nil, **options)
+      post("/gender", { name: value, country: country, locale: locale, ip: ip }.merge(options).compact)
     end
-    def email(value, country: nil, **options)
-      post("/gender/email", { email: value, country: country }.merge(options).compact)
+    def email(value, country: nil, locale: nil, ip: nil, **options)
+      post("/gender/email", { email: value, country: country, locale: locale, ip: ip }.merge(options).compact)
     end
-    def username(value, country: nil, **options)
-      post("/gender/username", { username: value, country: country }.merge(options).compact)
+    def username(value, country: nil, locale: nil, ip: nil, **options)
+      post("/gender/username", { username: value, country: country, locale: locale, ip: ip }.merge(options).compact)
     end
-    def bulk(values, country: nil, type: "name", **options)
-      post("/gender/bulk", { names: Array(values), country: country, type: type }.merge(options).compact)
+    # `country`, `locale` and `ip` apply to every name in the list.
+    def bulk(values, country: nil, locale: nil, ip: nil, type: "name", **options)
+      post("/gender/bulk", { names: Array(values), country: country, locale: locale, ip: ip, type: type }.merge(options).compact)
     end
     # Country distribution of a name. Not a country-of-origin or ethnicity
     # inference: "registrations" is counted volume, comparable only among the

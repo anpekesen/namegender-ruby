@@ -12,19 +12,33 @@ puts result["gender"], result["probability"], result["sample_size"]
 
 ## Options and response
 
-`name`, `email`, `username` and `bulk` accept `country:`, `ai_fallback:` and
-`best_guess:`:
+`name`, `email`, `username` and `bulk` accept `country:`, `locale:`, `ip:`,
+`ai_fallback:` and `best_guess:`:
 
 ```ruby
 result = client.name("Andrea", country: "IT", best_guess: true)
 ```
 
+When you do not know the country, pass what you have and the API works it out:
+`locale:` is a language tag such as `"it-IT"` or `"pt_BR"` (its region is used;
+a tag without one, `"en"`, sets no country), and `ip:` is your end user's IP
+address (looked up, not stored). `country:` wins over `locale:`, which wins
+over `ip:`. The response's `country_source` says which one was used:
+`"country"`, `"locale"`, `"ip"` or `nil`.
+
+```ruby
+result = client.name("Andrea", locale: request.env["HTTP_ACCEPT_LANGUAGE"].to_s[/\A[^,;]+/], ip: request.ip)
+puts result["country"], result["country_source"]
+```
+
 A result carries `query`, `name`, `first_name`, `middle_name`, `last_name`, `name_type`, `gender`, `country`, `probability`,
-`sample_size`, `took_ms`, `source`, `confidence` and `matched_as`, alongside
+`sample_size`, `took_ms`, `source`, `confidence`, `matched_as` and `country_source`, alongside
 `credits_charged`, `credits_remaining`, `data_version` and `request_id`.
 Success is the HTTP status: any non-2xx response raises `NameGender::Error`
 with `status` and `body` (`{"error", "message", "request_id", "docs"}`).
-Branch on `body["error"]`, not on the message.
+Branch on `body["error"]`, not on the message. A `bulk` response carries
+`country_source` once, at the top level next to `summary`, not on each item
+in `results`.
 
 ## Country distribution
 

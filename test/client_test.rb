@@ -135,14 +135,24 @@ class StandInAPI
     end
   end
 
+  # Which input supplied the country, as the API decides it:
+  # country > a locale with a region > ip.
+  def country_source(body)
+    if body["country"] then "country"
+    elsif body["locale"].to_s.match?(/[-_][A-Za-z]{2}\z/) then "locale"
+    elsif body["ip"] then "ip"
+    end
+  end
+
   def respond_json(path, body)
+    source = { "country_source" => country_source(body) } if body
     case path
     when "/api/v1/gender"
-      [200, result(body["name"], body["name"])]
+      [200, result(body["name"], body["name"]).merge(source)]
     when "/api/v1/gender/email"
-      [200, result(body["email"], "Ayşe").merge("matched_as" => "email")]
+      [200, result(body["email"], "Ayşe").merge("matched_as" => "email").merge(source)]
     when "/api/v1/gender/username"
-      [200, result(body["username"], "Ayşe").merge("matched_as" => "username")]
+      [200, result(body["username"], "Ayşe").merge("matched_as" => "username").merge(source)]
     when "/api/v1/gender/bulk"
       results = Array(body["names"]).map { |n| result(n, n).reject { |k, _| k.start_with?("credits_") } }
       [200, {
@@ -150,7 +160,7 @@ class StandInAPI
         "summary" => { "total" => results.size, "female" => results.size, "male" => 0, "unknown" => 0 },
         "credits" => { "charged" => results.size, "remaining" => 998 - results.size },
         "data_version" => "2026.09", "request_id" => "req_2"
-      }]
+      }.merge(source)]
     when "/api/v1/gender/countries"
       [200, {
         "name" => body["name"],
@@ -280,6 +290,49 @@ class ClientTest < Minitest::Test
     assert_equal %w[Ayşe Mehmet], result["results"].map { |r| r["name"] }
     assert_equal 2, result["summary"]["total"]
     assert_equal 2, result["credits"]["charged"]
+  end
+
+  def test_name_with_locale
+    result = @client.name("Andrea", locale: "it-IT")
+    assert_request "POST", "/api/v1/gender", { "name" => "Andrea", "locale" => "it-IT" }
+    assert_equal "locale", result["country_source"]
+  end
+
+  def test_name_with_ip
+    result = @client.name("Andrea", ip: "203.0.113.7")
+    assert_request "POST", "/api/v1/gender", { "name" => "Andrea", "ip" => "203.0.113.7" }
+    assert_equal "ip", result["country_source"]
+  end
+
+  def test_country_wins_over_locale_and_ip
+    result = @client.name("Andrea", country: "IT", locale: "pt_BR", ip: "203.0.113.7")
+    assert_request "POST", "/api/v1/gender",
+                   { "name" => "Andrea", "country" => "IT", "locale" => "pt_BR", "ip" => "203.0.113.7" }
+    assert_equal "country", result["country_source"]
+  end
+
+  def test_locale_without_a_region_sets_no_country_source
+    result = @client.name("Andrea", locale: "en")
+    assert_request "POST", "/api/v1/gender", { "name" => "Andrea", "locale" => "en" }
+    assert_nil result["country_source"]
+    assert result.key?("country_source")
+  end
+
+  def test_email_and_username_send_locale_and_ip
+    result = @client.email("andrea@example.com", locale: "pt_BR", best_guess: true)
+    assert_equal({ "email" => "andrea@example.com", "locale" => "pt_BR", "best_guess" => true }, @api.requests.last.body)
+    assert_equal "locale", result["country_source"]
+    result = @client.username("andrea_88", ip: "2001:db8::1")
+    assert_equal({ "username" => "andrea_88", "ip" => "2001:db8::1" }, @api.requests.last.body)
+    assert_equal "ip", result["country_source"]
+  end
+
+  def test_bulk_with_locale_and_ip
+    result = @client.bulk(%w[Andrea Luca], locale: "it-IT", ip: "203.0.113.7")
+    assert_request "POST", "/api/v1/gender/bulk",
+                   { "names" => %w[Andrea Luca], "locale" => "it-IT", "ip" => "203.0.113.7", "type" => "name" }
+    assert_equal "locale", result["country_source"]
+    result["results"].each { |item| refute item.key?("country_source") }
   end
 
   def test_bulk_with_one_name_sends_an_array
