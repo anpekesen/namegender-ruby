@@ -84,6 +84,35 @@ does not apply here. If you already know the gender, pass
 names and returns `results` in input order. An unsupported language raises
 `NameGender::Error` with status 422 and `body["supported"]`.
 
+## Name check
+
+Whether a name typed into a form looks like a real person's name, with the
+reasons. It never calls a name fake: use it to flag records for a closer look,
+not to reject people automatically.
+
+```ruby
+result = client.name_check("asdf qwerty")
+puts result["assessment"]   # implausible
+puts result["score"]        # 0 (0-100)
+result["signals"].each { |s| puts "#{s["code"]} #{s["severity"]} #{s["part"]}" }   # keyboard_pattern high first_name, ...
+
+client.name_check("Jennifer Null")["assessment"]   # plausible
+
+# Names stored in separate fields are used as they are, not parsed:
+client.name_check(first_name: "Jennifer", last_name: "Null", country: "US")
+
+result = client.name_check_bulk(["Jennifer Null", "asdf qwerty"])
+puts result["summary"]   # total, plausible, suspicious, implausible
+```
+
+One credit per name. `assessment` is `"plausible"`, `"suspicious"` or
+`"implausible"`; each signal has `code`, `severity` (`high`, `medium`, `low`,
+`info`, `positive`), `part` and `value` (either can be `nil`). `evidence`
+says whether the first name is counted, attested or not found. Surnames are
+judged by their shape only. It takes `country:`, `locale:` and `ip:`, not
+`best_guess` or `ai_fallback`. `name_check_bulk` takes up to 100 names and
+returns `results` in input order.
+
 ## File jobs
 
 Upload a CSV or XLSX file (up to 100 MB and 1,000,000 rows) and get it back

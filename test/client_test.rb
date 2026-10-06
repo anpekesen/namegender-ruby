@@ -149,6 +149,34 @@ class StandInAPI
     }
   }.freeze
 
+  # Name check results in the API shape, for the names the tests use.
+  NAME_CHECKS = {
+    "asdf qwerty" => {
+      "query" => "asdf qwerty", "assessment" => "implausible", "score" => 0,
+      "signals" => [
+        { "code" => "keyboard_pattern", "severity" => "high", "part" => "first_name", "value" => "asdf" },
+        { "code" => "keyboard_pattern", "severity" => "high", "part" => "last_name", "value" => "qwerty" },
+        { "code" => "first_name_not_found", "severity" => "medium", "part" => "first_name", "value" => nil }
+      ],
+      "first_name" => "Asdf", "last_name" => "Qwerty", "name_type" => "personal",
+      "evidence" => { "first_name_status" => "not_found", "first_name_counted_records" => 0 }
+    },
+    "Jennifer Null" => {
+      "query" => "Jennifer Null", "assessment" => "plausible", "score" => 96,
+      "signals" => [
+        { "code" => "first_name_attested", "severity" => "positive", "part" => "first_name", "value" => "Jennifer" }
+      ],
+      "first_name" => "Jennifer", "last_name" => "Null", "name_type" => "personal",
+      "evidence" => { "first_name_status" => "counted", "first_name_counted_records" => 1_470_000 }
+    },
+    "Acme Ltd" => {
+      "query" => "Acme Ltd", "assessment" => "suspicious", "score" => 40,
+      "signals" => [{ "code" => "organization_name", "severity" => "medium", "part" => "full", "value" => nil }],
+      "first_name" => nil, "last_name" => nil, "name_type" => "organization",
+      "evidence" => { "first_name_status" => nil, "first_name_counted_records" => 0 }
+    }
+  }.freeze
+
   def respond(method, path, body)
     case [method, path]
     in ["POST", "/api/v1/batches"]
@@ -228,6 +256,26 @@ class StandInAPI
         "data_version" => "2026.10", "request_id" => "req_5", "took_ms" => 4, "language" => "de",
         "summary" => { "total" => results.size, "gendered" => counts.fetch("gendered", 0),
                        "neutral" => counts.fetch("neutral", 0), "organization" => counts.fetch("organization", 0) },
+        "results" => results
+      }.merge(source)]
+    when "/api/v1/name-check"
+      query = body["name"] || [body["first_name"], body["last_name"]].compact.join(" ")
+      if query.empty?
+        return [400, {
+          "error" => "missing_input", "message" => "Send name, or first_name and last_name.", "request_id" => "req_10"
+        }]
+      end
+      [200, {
+        "credits_charged" => 1, "credits_remaining" => 4999, "data_version" => "2026.10", "request_id" => "req_6"
+      }.merge(source).merge(NAME_CHECKS.fetch(query))]
+    when "/api/v1/name-check/bulk"
+      results = Array(body["names"]).map { |n| NAME_CHECKS.fetch(n) }
+      counts = results.map { |r| r["assessment"] }.tally
+      [200, {
+        "credits_charged" => results.size, "credits_remaining" => 4999 - results.size,
+        "data_version" => "2026.10", "request_id" => "req_7", "took_ms" => 4,
+        "summary" => { "total" => results.size, "plausible" => counts.fetch("plausible", 0),
+                       "suspicious" => counts.fetch("suspicious", 0), "implausible" => counts.fetch("implausible", 0) },
         "results" => results
       }.merge(source)]
     when "/api/v1/me"
@@ -533,6 +581,92 @@ class ClientTest < Minitest::Test
     assert_equal "invalid_input", error.body["error"]
     assert_equal "language", error.body["field"]
     assert_includes error.body["supported"], "de"
+  end
+
+  # --- Name check ---
+
+  def test_name_check_sends_only_the_name
+    result = @client.name_check("asdf qwerty")
+    assert_request "POST", "/api/v1/name-check", { "name" => "asdf qwerty" }
+    assert_equal "implausible", result["assessment"]
+    assert_equal 0, result["score"]
+    assert_equal "Asdf", result["first_name"]
+    assert_equal "Qwerty", result["last_name"]
+    assert_equal "personal", result["name_type"]
+    assert_equal({ "code" => "keyboard_pattern", "severity" => "high", "part" => "first_name", "value" => "asdf" },
+                 result["signals"].first)
+    assert_equal({ "first_name_status" => "not_found", "first_name_counted_records" => 0 }, result["evidence"])
+    assert_nil result["country_source"]
+    assert result.key?("country_source")
+    assert_equal 1, result["credits_charged"]
+    assert_equal "2026.10", result["data_version"]
+    assert_equal "req_6", result["request_id"]
+  end
+
+  def test_name_check_sends_every_option_that_is_set
+    @client.name_check("Jennifer Null", country: "US", locale: "en-US", ip: "203.0.113.7")
+    assert_request "POST", "/api/v1/name-check", {
+      "name" => "Jennifer Null", "country" => "US", "locale" => "en-US", "ip" => "203.0.113.7"
+    }
+  end
+
+  def test_name_check_with_first_and_last_name
+    result = @client.name_check(first_name: "Jennifer", last_name: "Null", locale: "en-US")
+    assert_request "POST", "/api/v1/name-check", { "first_name" => "Jennifer", "last_name" => "Null", "locale" => "en-US" }
+    assert_equal "plausible", result["assessment"]
+    assert_equal 96, result["score"]
+    assert_equal "positive", result["signals"].first["severity"]
+    assert_equal "counted", result["evidence"]["first_name_status"]
+    assert_equal "locale", result["country_source"]
+  end
+
+  def test_name_check_does_not_take_gender_lookup_options
+    assert_raises(ArgumentError) { @client.name_check("asdf qwerty", best_guess: true) }
+    assert_raises(ArgumentError) { @client.name_check("asdf qwerty", language: "en") }
+    assert_raises(ArgumentError) { @client.name_check_bulk(["asdf qwerty"], ai_fallback: true) }
+    assert_empty @api.requests
+  end
+
+  def test_name_check_null_part_value_and_first_name_status
+    result = @client.name_check("Acme Ltd")
+    assert_equal "suspicious", result["assessment"]
+    assert_equal "organization", result["name_type"]
+    signal = result["signals"].first
+    assert_equal "organization_name", signal["code"]
+    assert_equal "full", signal["part"]
+    assert_nil signal["value"]
+    assert signal.key?("value")
+    assert_nil result["first_name"]
+    assert_nil result["evidence"]["first_name_status"]
+    assert result["evidence"].key?("first_name_status")
+    assert_nil @client.name_check("asdf qwerty")["signals"].last["value"]
+  end
+
+  def test_name_check_bulk_keeps_order_and_summary
+    names = ["Jennifer Null", "asdf qwerty", "Acme Ltd"]
+    result = @client.name_check_bulk(names, country: "US")
+    assert_request "POST", "/api/v1/name-check/bulk", { "names" => names, "country" => "US" }
+    assert_equal names, result["results"].map { |r| r["query"] }
+    assert_equal %w[plausible implausible suspicious], result["results"].map { |r| r["assessment"] }
+    assert_equal [96, 0, 40], result["results"].map { |r| r["score"] }
+    assert_equal({ "total" => 3, "plausible" => 1, "suspicious" => 1, "implausible" => 1 }, result["summary"])
+    assert_equal 3, result["credits_charged"]
+    assert_equal "country", result["country_source"]
+    result["results"].each { |item| refute item.key?("credits_charged") }
+  end
+
+  def test_name_check_bulk_with_a_single_string_sends_an_array
+    @client.name_check_bulk("asdf qwerty")
+    assert_request "POST", "/api/v1/name-check/bulk", { "names" => ["asdf qwerty"] }
+  end
+
+  def test_name_check_missing_input_raises
+    error = assert_raises(NameGender::Error) { @client.name_check }
+    assert_request "POST", "/api/v1/name-check", {}
+    assert_equal 400, error.status
+    assert_equal "Send name, or first_name and last_name.", error.message
+    assert_equal "missing_input", error.body["error"]
+    assert_equal "req_10", error.body["request_id"]
   end
 
   # --- File jobs ---

@@ -80,6 +80,27 @@ module NameGender
         min_probability: min_probability, title: title
       }.compact)
     end
+    # Whether a name typed into a form looks like a real person's name, with
+    # reasons. It never calls a name fake: use it to flag records for a look,
+    # not to reject people automatically. "assessment" is "plausible",
+    # "suspicious" or "implausible", "score" is 0-100, and "signals" lists
+    # why ({"code", "severity", "part", "value"}; "part" and "value" can be
+    # nil). Surnames are judged by their shape only. `value` is the full name;
+    # pass `first_name:` and `last_name:` instead when they are stored
+    # separately (they are not parsed). `country`, `locale` and `ip` work as
+    # in #name. One credit per name. `best_guess`, `ai_fallback` and
+    # `language` do not apply here and are not accepted.
+    def name_check(value = nil, first_name: nil, last_name: nil, country: nil, locale: nil, ip: nil)
+      post("/name-check", {
+        name: value, first_name: first_name, last_name: last_name, country: country, locale: locale, ip: ip
+      }.compact)
+    end
+    # Up to 100 names; every option applies to all of them. "results" keeps
+    # the input order, "summary" counts the plausible, suspicious and
+    # implausible names.
+    def name_check_bulk(values, country: nil, locale: nil, ip: nil)
+      post("/name-check/bulk", { names: Array(values), country: country, locale: locale, ip: ip }.compact)
+    end
     def account
       request(Net::HTTP::Get, "/me")
     end

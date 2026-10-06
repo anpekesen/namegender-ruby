@@ -1,8 +1,8 @@
 Gem::Specification.new do |spec|
   spec.name = "namegender"
-  spec.version = "0.6.0"
+  spec.version = "0.7.0"
   spec.summary = "Official Ruby client for the NameGender API"
-  spec.description = "A dependency-free Ruby client for name, email, username, bulk, country distribution and salutation lookups through NameGender."
+  spec.description = "A dependency-free Ruby client for name, email, username, bulk, country distribution, salutation and name check lookups through NameGender."
   spec.homepage = "https://namegender.com"
   spec.authors = ["NameGender"]
   spec.email = ["support@namegender.com"]
