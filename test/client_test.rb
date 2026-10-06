@@ -116,6 +116,39 @@ class StandInAPI
     }
   end
 
+  # Salutation results in the API shape, for the names the tests use.
+  SALUTATIONS = {
+    "Dr. Anna Müller" => {
+      "query" => "Dr. Anna Müller", "language" => "de", "form" => "gendered", "reason" => nil,
+      "salutation" => {
+        "formal" => "Sehr geehrte Frau Dr. Müller,", "informal" => "Liebe Anna,",
+        "neutral" => "Guten Tag Dr. Anna Müller,"
+      },
+      "parts" => { "opening" => "Sehr geehrte", "courtesy" => "Frau", "academic" => "Dr.", "name" => "Müller" },
+      "gender" => "female", "gender_source" => "lookup", "probability" => 99, "confidence" => "high",
+      "first_name" => "Anna", "last_name" => "Müller", "name_type" => "personal", "country" => "DE"
+    },
+    "Kim Schmidt" => {
+      "query" => "Kim Schmidt", "language" => "de", "form" => "neutral", "reason" => "below_min_probability",
+      "salutation" => {
+        "formal" => "Guten Tag Kim Schmidt,", "informal" => "Hallo Kim,", "neutral" => "Guten Tag Kim Schmidt,"
+      },
+      "parts" => { "opening" => "Guten Tag", "courtesy" => nil, "academic" => nil, "name" => "Kim Schmidt" },
+      "gender" => nil, "gender_source" => nil, "probability" => nil, "confidence" => nil,
+      "first_name" => "Kim", "last_name" => "Schmidt", "name_type" => "personal", "country" => "DE"
+    },
+    "Müller GmbH" => {
+      "query" => "Müller GmbH", "language" => "de", "form" => "organization", "reason" => nil,
+      "salutation" => {
+        "formal" => "Sehr geehrte Damen und Herren,", "informal" => "Hallo,",
+        "neutral" => "Sehr geehrte Damen und Herren,"
+      },
+      "parts" => { "opening" => "Sehr geehrte Damen und Herren", "courtesy" => nil, "academic" => nil, "name" => nil },
+      "gender" => nil, "gender_source" => nil, "probability" => nil, "confidence" => nil,
+      "first_name" => nil, "last_name" => nil, "name_type" => "organization", "country" => "DE"
+    }
+  }.freeze
+
   def respond(method, path, body)
     case [method, path]
     in ["POST", "/api/v1/batches"]
@@ -176,6 +209,27 @@ class StandInAPI
         "credits_charged" => 1, "credits_remaining" => 997,
         "data_version" => "2026.09", "request_id" => "req_3"
       }]
+    when "/api/v1/salutation"
+      if body["language"] == "xx"
+        return [422, {
+          "error" => "invalid_input", "message" => "Unsupported language.", "field" => "language",
+          "supported" => %w[en de tr], "request_id" => "req_8"
+        }]
+      end
+      item = SALUTATIONS.fetch(body["name"] || "Dr. Anna Müller")
+      [200, {
+        "credits_charged" => 1, "credits_remaining" => 4999, "data_version" => "2026.10", "request_id" => "req_4"
+      }.merge(source).merge(item)]
+    when "/api/v1/salutation/bulk"
+      results = Array(body["names"]).map { |n| SALUTATIONS.fetch(n) }
+      counts = results.map { |r| r["form"] }.tally
+      [200, {
+        "credits_charged" => results.size, "credits_remaining" => 4999 - results.size,
+        "data_version" => "2026.10", "request_id" => "req_5", "took_ms" => 4, "language" => "de",
+        "summary" => { "total" => results.size, "gendered" => counts.fetch("gendered", 0),
+                       "neutral" => counts.fetch("neutral", 0), "organization" => counts.fetch("organization", 0) },
+        "results" => results
+      }.merge(source)]
     when "/api/v1/me"
       [200, {
         "email" => "dev@example.com", "credits_remaining" => 997, "purchased_credits" => 1000,
@@ -401,6 +455,84 @@ class ClientTest < Minitest::Test
     assert_equal 502, error.status
     assert_equal "NameGender returned invalid JSON", error.message
     assert_nil error.body
+  end
+
+  # --- Salutation ---
+
+  def test_salutation_sends_only_the_name
+    result = @client.salutation("Dr. Anna Müller")
+    assert_request "POST", "/api/v1/salutation", { "name" => "Dr. Anna Müller" }
+    assert_equal "gendered", result["form"]
+    assert_nil result["reason"]
+    assert_equal "Sehr geehrte Frau Dr. Müller,", result["salutation"]["formal"]
+    assert_equal "Liebe Anna,", result["salutation"]["informal"]
+    assert_equal "Guten Tag Dr. Anna Müller,", result["salutation"]["neutral"]
+    assert_equal({ "opening" => "Sehr geehrte", "courtesy" => "Frau", "academic" => "Dr.", "name" => "Müller" },
+                 result["parts"])
+    assert_equal "lookup", result["gender_source"]
+    assert_equal 99, result["probability"]
+    assert_equal 1, result["credits_charged"]
+    assert_equal "2026.10", result["data_version"]
+  end
+
+  def test_salutation_sends_every_option_that_is_set
+    @client.salutation("Dr. Anna Müller", language: "de", country: "DE", locale: "de-AT", ip: "203.0.113.7",
+                                          gender: "female", min_probability: 80, title: "Dr.")
+    assert_request "POST", "/api/v1/salutation", {
+      "name" => "Dr. Anna Müller", "language" => "de", "country" => "DE", "locale" => "de-AT",
+      "ip" => "203.0.113.7", "gender" => "female", "min_probability" => 80, "title" => "Dr."
+    }
+  end
+
+  def test_salutation_with_first_and_last_name
+    result = @client.salutation(first_name: "Anna", last_name: "Müller", locale: "de-DE")
+    assert_request "POST", "/api/v1/salutation", { "first_name" => "Anna", "last_name" => "Müller", "locale" => "de-DE" }
+    assert_equal "locale", result["country_source"]
+  end
+
+  def test_salutation_does_not_take_gender_lookup_options
+    assert_raises(ArgumentError) { @client.salutation("Kim Schmidt", best_guess: true) }
+    assert_raises(ArgumentError) { @client.salutation_bulk(["Kim Schmidt"], ai_fallback: true) }
+    assert_empty @api.requests
+  end
+
+  def test_salutation_neutral_form_with_a_reason_and_null_parts
+    result = @client.salutation("Kim Schmidt", language: "de")
+    assert_equal "neutral", result["form"]
+    assert_equal "below_min_probability", result["reason"]
+    assert_equal "Guten Tag Kim Schmidt,", result["salutation"]["formal"]
+    assert_nil result["parts"]["courtesy"]
+    assert_nil result["parts"]["academic"]
+    assert_nil result["gender"]
+    assert_nil result["probability"]
+    assert result["parts"].key?("courtesy")
+    assert result.key?("gender_source")
+  end
+
+  def test_salutation_bulk_keeps_order_and_summary
+    names = ["Müller GmbH", "Dr. Anna Müller", "Kim Schmidt"]
+    result = @client.salutation_bulk(names, language: "de", min_probability: 95)
+    assert_request "POST", "/api/v1/salutation/bulk",
+                   { "names" => names, "language" => "de", "min_probability" => 95 }
+    assert_equal names, result["results"].map { |r| r["query"] }
+    assert_equal %w[organization gendered neutral], result["results"].map { |r| r["form"] }
+    assert_equal({ "total" => 3, "gendered" => 1, "neutral" => 1, "organization" => 1 }, result["summary"])
+    assert_equal 3, result["credits_charged"]
+    result["results"].each { |item| refute item.key?("credits_charged") }
+  end
+
+  def test_salutation_bulk_with_a_single_string_sends_an_array
+    @client.salutation_bulk("Kim Schmidt")
+    assert_request "POST", "/api/v1/salutation/bulk", { "names" => ["Kim Schmidt"] }
+  end
+
+  def test_salutation_unsupported_language_raises
+    error = assert_raises(NameGender::Error) { @client.salutation("Dr. Anna Müller", language: "xx") }
+    assert_equal 422, error.status
+    assert_equal "Unsupported language.", error.message
+    assert_equal "invalid_input", error.body["error"]
+    assert_equal "language", error.body["field"]
+    assert_includes error.body["supported"], "de"
   end
 
   # --- File jobs ---

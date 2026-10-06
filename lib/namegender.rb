@@ -52,6 +52,34 @@ module NameGender
     def countries(value, limit: nil)
       post("/gender/countries", { name: value, limit: limit }.compact)
     end
+    # A salutation for a letter or an email: "Sehr geehrte Frau Dr. Müller,",
+    # "Sayın Ahmet Bey,". `value` is the full name, titles included; pass
+    # `first_name:` and `last_name:` instead when they are stored separately
+    # (they are not parsed). `language` defaults to the language of `locale`,
+    # then the main language of the country, then "en"; an unsupported one is
+    # a 422. `gender:` ("male", "female", "neutral") is a known gender and
+    # skips the lookup; `min_probability:` (50-100, server default 90) is the
+    # certainty below which the neutral form is used; `title:` is an academic
+    # title kept in a separate field ("Dr."). "form" and "reason" in the result
+    # say why a neutral form was chosen. One credit per name. `best_guess` and
+    # `ai_fallback` do not apply here and are not accepted.
+    def salutation(value = nil, first_name: nil, last_name: nil, language: nil, country: nil, locale: nil, ip: nil,
+                   gender: nil, min_probability: nil, title: nil)
+      post("/salutation", {
+        name: value, first_name: first_name, last_name: last_name, language: language, country: country,
+        locale: locale, ip: ip, gender: gender, min_probability: min_probability, title: title
+      }.compact)
+    end
+    # Up to 100 names; every option applies to all of them. "results" keeps
+    # the input order, "summary" counts the gendered, neutral and organization
+    # forms.
+    def salutation_bulk(values, language: nil, country: nil, locale: nil, ip: nil, gender: nil, min_probability: nil,
+                        title: nil)
+      post("/salutation/bulk", {
+        names: Array(values), language: language, country: country, locale: locale, ip: ip, gender: gender,
+        min_probability: min_probability, title: title
+      }.compact)
+    end
     def account
       request(Net::HTTP::Get, "/me")
     end

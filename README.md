@@ -53,6 +53,37 @@ result["registrations"].each { |r| puts "#{r["country"]} #{r["share"]}%" }
 puts result["attested_in"].join(", ")
 ```
 
+## Salutation
+
+A ready-to-use salutation for a letter or an email, in `en`, `de`, `fr`, `es`,
+`it`, `pt`, `nl`, `tr`, `pl` or `ja` (and regional variants such as `de-AT`
+or `pt-BR`). Without `language:` it follows `locale:`, then the country, then
+English.
+
+```ruby
+result = client.salutation("Dr. Anna Müller", language: "de")
+puts result["salutation"]["formal"]     # Sehr geehrte Frau Dr. Müller,
+puts result["salutation"]["informal"]   # Liebe Anna,
+
+client.salutation("Ahmet Yılmaz", language: "tr")["salutation"]["formal"]   # Sayın Ahmet Bey,
+
+# Names stored in separate fields are used as they are, not parsed:
+client.salutation(first_name: "Anna", last_name: "Müller", title: "Dr.", language: "de")
+
+result = client.salutation_bulk(["Dr. Anna Müller", "Müller GmbH"], language: "de")
+result["results"].each { |r| puts r["salutation"]["formal"] }
+puts result["summary"]   # total, gendered, neutral, organization
+```
+
+One credit per name. When the gender is not certain enough (`min_probability:`,
+default 90), you get the neutral form rather than a guess: `form` is
+`"gendered"`, `"neutral"` or `"organization"`, and `reason` says why it is not
+gendered (`"gender_unknown"`, `"below_min_probability"`, ...). `best_guess`
+does not apply here. If you already know the gender, pass
+`gender: "female"`, `"male"` or `"neutral"`. `salutation_bulk` takes up to 100
+names and returns `results` in input order. An unsupported language raises
+`NameGender::Error` with status 422 and `body["supported"]`.
+
 ## File jobs
 
 Upload a CSV or XLSX file (up to 100 MB and 1,000,000 rows) and get it back
