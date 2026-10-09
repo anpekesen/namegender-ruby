@@ -177,6 +177,32 @@ class StandInAPI
     }
   }.freeze
 
+  # Age results in the API shape, for the names the tests use. Age responses
+  # carry no data_version.
+  AGES = {
+    "Brittany" => {
+      "name" => "Brittany", "first_name" => "Brittany", "gender" => nil, "age" => 36,
+      "age_range" => { "low" => 32, "high" => 38 }, "age_range_80" => { "low" => 28, "high" => 41 },
+      "birth_year" => 1990, "sample_size" => 353_775, "births" => 361_434, "country" => "US",
+      "source" => "ssa", "series" => "1880-2024", "reference_year" => 2026, "reason" => nil
+    },
+    "Zzyzx" => {
+      "name" => "Zzyzx", "first_name" => nil, "gender" => nil, "age" => nil,
+      "age_range" => nil, "age_range_80" => nil, "birth_year" => nil, "sample_size" => 0, "births" => 0,
+      "country" => "US", "source" => nil, "series" => nil, "reference_year" => 2026, "reason" => "not_found"
+    }
+  }.freeze
+
+  # The age result for a name, as the API answers it for these inputs: any
+  # country outside the US, France and Norway is not covered.
+  def age_result(name, body, source)
+    country = body["country"] || (source == "ip" ? "DE" : "US")
+    result = AGES.fetch(name).merge("gender" => body["gender"], "country" => country, "country_source" => source)
+    return result if %w[US FR NO].include?(country)
+    result.merge("age" => nil, "age_range" => nil, "age_range_80" => nil, "birth_year" => nil, "sample_size" => 0,
+                 "births" => 0, "source" => nil, "series" => nil, "reason" => "country_not_covered")
+  end
+
   def respond(method, path, body)
     case [method, path]
     in ["POST", "/api/v1/batches"]
@@ -278,6 +304,18 @@ class StandInAPI
                        "suspicious" => counts.fetch("suspicious", 0), "implausible" => counts.fetch("implausible", 0) },
         "results" => results
       }.merge(source)]
+    when "/api/v1/age"
+      result = age_result(body["name"], body, country_source(body) || "default")
+      charged = result["reason"] == "country_not_covered" ? 0 : 1
+      [200, { "credits_charged" => charged, "credits_remaining" => 4999, "request_id" => "req_8" }.merge(result)]
+    when "/api/v1/age/bulk"
+      cs = country_source(body) || "default"
+      results = Array(body["names"]).map { |n| age_result(n, body, cs) }
+      charged = results.count { |r| r["reason"] != "country_not_covered" }
+      [200, {
+        "credits_charged" => charged, "credits_remaining" => 4999 - charged, "request_id" => "req_9",
+        "country_source" => cs, "results" => results
+      }]
     when "/api/v1/me"
       [200, {
         "email" => "dev@example.com", "credits_remaining" => 997, "purchased_credits" => 1000,
@@ -667,6 +705,94 @@ class ClientTest < Minitest::Test
     assert_equal "Send name, or first_name and last_name.", error.message
     assert_equal "missing_input", error.body["error"]
     assert_equal "req_10", error.body["request_id"]
+  end
+
+  # --- Age ---
+
+  def test_age_sends_only_the_name_and_reads_both_ranges
+    result = @client.age("Brittany")
+    assert_request "POST", "/api/v1/age", { "name" => "Brittany" }
+    assert_equal 36, result["age"]
+    assert_equal({ "low" => 32, "high" => 38 }, result["age_range"])
+    assert_equal({ "low" => 28, "high" => 41 }, result["age_range_80"])
+    assert_equal 1990, result["birth_year"]
+    assert_equal 353_775, result["sample_size"]
+    assert_equal 361_434, result["births"]
+    assert_equal "Brittany", result["first_name"]
+    assert_nil result["gender"]
+    assert_equal "US", result["country"]
+    assert_equal "default", result["country_source"]
+    assert_equal "ssa", result["source"]
+    assert_equal "1880-2024", result["series"]
+    assert_equal 2026, result["reference_year"]
+    assert_nil result["reason"]
+    assert result.key?("reason")
+    assert_equal 1, result["credits_charged"]
+    assert_equal 4999, result["credits_remaining"]
+    assert_equal "req_8", result["request_id"]
+    refute result.key?("data_version")
+  end
+
+  def test_age_sends_every_option_that_is_set
+    result = @client.age("Brittany", gender: "female", country: "US", locale: "en-US", ip: "203.0.113.7")
+    assert_request "POST", "/api/v1/age", {
+      "name" => "Brittany", "gender" => "female", "country" => "US", "locale" => "en-US", "ip" => "203.0.113.7"
+    }
+    assert_equal "female", result["gender"]
+    assert_equal "country", result["country_source"]
+  end
+
+  def test_age_drops_nil_and_empty_options
+    result = @client.age("Brittany", gender: nil, country: "", locale: "en-US", ip: nil)
+    assert_request "POST", "/api/v1/age", { "name" => "Brittany", "locale" => "en-US" }
+    assert_equal "locale", result["country_source"]
+  end
+
+  def test_age_does_not_take_gender_lookup_options
+    assert_raises(ArgumentError) { @client.age("Brittany", best_guess: true) }
+    assert_raises(ArgumentError) { @client.age_bulk(["Brittany"], language: "en") }
+    assert_empty @api.requests
+  end
+
+  def test_age_country_not_covered_is_an_answer_without_a_charge
+    result = @client.age("Brittany", country: "DE")
+    assert_request "POST", "/api/v1/age", { "name" => "Brittany", "country" => "DE" }
+    assert_nil result["age"]
+    assert_nil result["age_range"]
+    assert_nil result["age_range_80"]
+    assert_nil result["birth_year"]
+    assert_nil result["source"]
+    assert result.key?("age")
+    assert_equal "country_not_covered", result["reason"]
+    assert_equal 0, result["credits_charged"]
+    assert_equal "DE", result["country"]
+  end
+
+  def test_age_bulk_keeps_order
+    names = %w[Zzyzx Brittany]
+    result = @client.age_bulk(names, gender: "female", ip: "")
+    assert_request "POST", "/api/v1/age/bulk", { "names" => names, "gender" => "female" }
+    assert_equal names, result["results"].map { |r| r["name"] }
+    assert_equal [nil, 36], result["results"].map { |r| r["age"] }
+    assert_equal %w[not_found], result["results"].map { |r| r["reason"] }.compact
+    assert_equal({ "low" => 28, "high" => 41 }, result["results"].last["age_range_80"])
+    assert_equal 2, result["credits_charged"]
+    assert_equal "default", result["country_source"]
+    assert_equal "req_9", result["request_id"]
+    result["results"].each { |item| refute item.key?("credits_charged") }
+  end
+
+  def test_age_bulk_with_a_single_string_sends_an_array
+    @client.age_bulk("Brittany")
+    assert_request "POST", "/api/v1/age/bulk", { "names" => ["Brittany"] }
+  end
+
+  def test_age_api_error_raises
+    @api.override("/api/v1/age", 402, JSON.generate("error" => "no_credits", "message" => "Out of credits.", "request_id" => "req_11"))
+    error = assert_raises(NameGender::Error) { @client.age("Brittany") }
+    assert_equal 402, error.status
+    assert_equal "no_credits", error.body["error"]
+    assert_equal "req_11", error.body["request_id"]
   end
 
   # --- File jobs ---

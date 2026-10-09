@@ -113,6 +113,34 @@ judged by their shape only. It takes `country:`, `locale:` and `ip:`, not
 `best_guess` or `ai_fallback`. `name_check_bulk` takes up to 100 names and
 returns `results` in input order.
 
+## Age from name
+
+The estimated age of the people who carry a first name, from birth records.
+It describes a group, not a person: never use it for decisions about an
+individual.
+
+```ruby
+result = client.age("Brittany")
+puts result["age"]            # 36 (median)
+puts result["age_range"]      # {"low"=>32, "high"=>38}, the middle half
+puts result["age_range_80"]   # {"low"=>28, "high"=>41}, the middle 80%
+puts result["birth_year"]     # 1990
+
+client.age("Brittany", gender: "female", country: "US")
+
+result = client.age_bulk(["Brittany", "Margaret"])
+result["results"].each { |r| puts "#{r["name"]} #{r["age"]}" }
+```
+
+It covers the US, France and Norway; with no country hint US data is used and
+`country_source` is `"default"`. For other countries `age` is `nil` and
+`reason` is `"country_not_covered"`, with no credit charged; `reason` can also
+be `"not_found"` or `"insufficient_data"`. These are normal answers, not
+errors. `gender:` (`"male"` or `"female"`) narrows the estimate to that
+gender's records. It takes `country:`, `locale:` and `ip:`, not `best_guess`
+or `ai_fallback`. One credit per name; `age_bulk` takes up to 100 names and
+returns `results` in input order. Age responses carry no `data_version`.
+
 ## File jobs
 
 Upload a CSV or XLSX file (up to 100 MB and 1,000,000 rows) and get it back

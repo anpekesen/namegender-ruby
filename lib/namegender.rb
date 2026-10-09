@@ -101,6 +101,26 @@ module NameGender
     def name_check_bulk(values, country: nil, locale: nil, ip: nil)
       post("/name-check/bulk", { names: Array(values), country: country, locale: locale, ip: ip }.compact)
     end
+    # Estimated age of the people who carry a first name, from birth records:
+    # "age" is the median, "age_range" the middle half and "age_range_80" the
+    # middle 80 percent ({"low", "high"}), "birth_year" the median birth year.
+    # It describes a group, not a person: never use it for decisions about an
+    # individual. Covers the US, France and Norway; with no country hint US
+    # data is used and "country_source" is "default". When "age" is nil,
+    # "reason" says why ("not_found", "insufficient_data" or
+    # "country_not_covered"); that is a normal answer, not an error, and
+    # "country_not_covered" costs no credit. `gender:` ("male" or "female")
+    # narrows to that gender's records; `country`, `locale` and `ip` work as
+    # in #name. Options that are nil or empty are not sent. One credit per
+    # name. Age responses carry no "data_version".
+    def age(value, gender: nil, country: nil, locale: nil, ip: nil)
+      post("/age", present(name: value, gender: gender, country: country, locale: locale, ip: ip))
+    end
+    # Up to 100 names; every option applies to all of them. "results" keeps
+    # the input order.
+    def age_bulk(values, gender: nil, country: nil, locale: nil, ip: nil)
+      post("/age/bulk", present(names: Array(values), gender: gender, country: country, locale: locale, ip: ip))
+    end
     def account
       request(Net::HTTP::Get, "/me")
     end
@@ -112,6 +132,10 @@ module NameGender
     private
     def post(path, body)
       request(Net::HTTP::Post, path, body)
+    end
+    # The fields that are set: nil and empty strings are dropped.
+    def present(fields)
+      fields.reject { |_, v| v.nil? || v == "" }
     end
     def request(klass, path, body = nil, raw: nil, headers: {})
       response = transmit(klass, path, body, raw: raw, headers: headers)
